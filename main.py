@@ -38,5 +38,16 @@ club = db.query(Clubs).all()
 app = FastAPI()
 
 @app.get("/")
-def root():
-    return club
+async def read_players():
+    try:
+        players = db.query(Clubs).all()
+        return players
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
+if __name__ == '__main__':
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)
