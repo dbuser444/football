@@ -5,6 +5,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app .
+COPY . .
+
+RUN apt-get update && apt-get install -y curl
 
 CMD ["python", "main.py"]

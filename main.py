@@ -1,9 +1,12 @@
 import os
+import uvicorn
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import Column, Integer, String
 from fastapi import FastAPI, HTTPException
 
+load_dotenv()
 
 db_host = os.environ.get("DB_HOST")
 db_port = os.environ.get("DB_PORT")
@@ -33,15 +36,15 @@ class Clubs(Base):
 # Создание таблицы (если она еще не существует)
 Base.metadata.create_all(bind=engine)
 
-club = db.query(Clubs).all()
+#club = db.query(Clubs).all()
 
 app = FastAPI()
 
 @app.get("/")
 async def read_players():
     try:
-        players = db.query(Clubs).all()
-        return players
+        club = db.query(Clubs).all()
+        return club
     except Exception as e:
         return {"error": str(e)}
     finally:
@@ -50,4 +53,4 @@ async def read_players():
 
 if __name__ == '__main__':
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
