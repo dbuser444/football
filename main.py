@@ -7,8 +7,6 @@ from sqlalchemy import Column, Integer, String, ForeignKey
 from fastapi import FastAPI, HTTPException, Body, Depends
 from pydantic import BaseModel
 from typing import Optional
-from fastapi.encoders import jsonable_encoder
-
 
 load_dotenv()
 
