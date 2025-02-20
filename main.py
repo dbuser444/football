@@ -95,7 +95,7 @@ class Goals(Base):
     __tablename__ = "goals"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     id_players = Column(Integer, ForeignKey("players.id")) # Внешний ключ
-    goal = Column(String, index=True)
+    goal = Column(Integer, index=True)
 
 # Создание таблицы (если она еще не существует)
 Base.metadata.create_all(bind=engine)
