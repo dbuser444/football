@@ -1,15 +1,19 @@
-import os
 import logging
-import bcrypt
-from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import HTTPBearer
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
-from sqlalchemy import Column, Integer, String, ForeignKey
-from fastapi import FastAPI, HTTPException, Body, Depends, status
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel
 from passlib.context import CryptContext
-from typing import Optional
+import os
+from dotenv import load_dotenv
+from pydantic import BaseModel, ValidationError
+from typing import Optional, List
+import datetime
+from jose import JWTError, jwt
+from starlette.responses import RedirectResponse
+import logging
+from fastapi.security import OAuth2PasswordRequestForm # Import OAuth2PasswordRequestForm (Импорт OAuth2PasswordRequestForm)
+from fastapi import Header
 
 load_dotenv()
 
@@ -27,17 +31,46 @@ engine = create_engine(DATABASE_URL)
 
 # Создаём фабрику сессий для взаимодействия с БД
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-#db = SessionLocal()
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # Базовый класс для моделей
 Base = declarative_base()
 
 # Создаем контекст для хеширования паролей с использованием bcrypt
-
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+SECRET_KEY = os.environ.get("SECRET_KEY") or "YOUR_SECRET_KEY"  #надежный случайный ключ
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 120 #Время жизни токена
+
+# Определение схемы безопасности
+security = HTTPBearer()
+
+# настройка логирования
+logging.basicConfig(level=logging.INFO)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def verify_password(plain_password, hashed_password): # Функция для проверки, соответствует ли введенный пароль хешированному
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password): # Функция для хеширования пароля
+    return pwd_context.hash(password)
+
+def create_access_token(data:dict, expires_delta: Optional[datetime.timedelta] = None): # Fixed create_access_token (Исправлена create_access_token)
+    """Creates a JWT access token."""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
 
 class User(Base):
     __tablename__ = "users"
@@ -70,31 +103,13 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
-security = HTTPBasic()
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-def verify_password(plain_password, hashed_password): # Функция для проверки, соответствует ли введенный пароль хешированному
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password): # Функция для хеширования пароля
-    return pwd_context.hash(password)
-
-def authenticate_user(credentials: HTTPBasicCredentials = Depends(security), db: Session = Depends(get_db)):
-    """Authenticates the user using HTTP Basic Auth and checks credentials against the database."""
-    user = db.query(User).filter(User.username == credentials.username).first() # Ищем пользователя в базе данных по имени пользователя
-    if user is None or not verify_password(credentials.password, user.hashed_password): # Проверяем, найден ли пользователь и верен ли пароль
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return user.username  # Return the username if authenticated
+async def authenticate_user(username: str, password: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        return False
+    if not verify_password(password, user.hashed_password):
+        return False
+    return user
 
 
  # для данных при создании/обновлении клуба
@@ -118,16 +133,51 @@ class UserCreate(BaseModel): # для данных создания пользо
     username: str
     password: str
     role: Optional[str] = "user"
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+class UserInDB(BaseModel):
+    username: str
+    hashed_password: str
+    role: str
 
-def is_admin(user: User = Depends(authenticate_user)):
-    if user.role != "admin":
+async def get_current_user(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None)  # Expect Authorization header (Ожидаем заголовок Authorization)
+):
+    """Gets the current user from the JWT token in the Authorization header."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    if not authorization:
+        raise credentials_exception
+
+    try:
+        token = authorization.split(" ")[1]  # Get the token from "Bearer <token>" (Получить токен из "Bearer <token>")
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")  # "sub" (subject) typically holds the username (обычно "sub" (subject) содержит имя пользователя)
+        if username is None:
+            raise credentials_exception
+        user = db.query(User).filter(User.username == username).first()
+        if user is None:
+            raise credentials_exception
+        return user
+    except JWTError:
+        raise credentials_exception
+
+def is_admin(current_user: User = Depends(get_current_user)):
+    if current_user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions",
         )
-    return user
+    return current_user
 
-@app.get("/clubs", dependencies=[Depends(authenticate_user)])
+
+@app.get("/clubs", dependencies=[Depends(get_current_user)])
 async def read_items(db: Session = Depends(get_db)):
     items = db.query(Clubs).all()
 
@@ -141,7 +191,7 @@ async def read_items(db: Session = Depends(get_db)):
 
     return result
 
-@app.get("/players", dependencies=[Depends(authenticate_user)])
+@app.get("/players", dependencies=[Depends(get_current_user)])
 async def read_items(db: Session = Depends(get_db)):
     items = db.query(Players).all()
 
@@ -158,9 +208,9 @@ async def read_items(db: Session = Depends(get_db)):
     return result
 
 
-@app.get("/goal", dependencies=[Depends(authenticate_user)])
+@app.get("/goal", dependencies=[Depends(get_current_user)])
 async def read_items(db: Session = Depends(get_db)):
-    logger.info("goal")
+    #logger.info("goal")
     items = db.query(Goals).all()
 
     # Преобразуем результаты в список словарей для JSON
@@ -174,7 +224,7 @@ async def read_items(db: Session = Depends(get_db)):
 
     return result
 
-@app.post("/clubs", dependencies=[Depends(authenticate_user)])
+@app.post("/clubs", dependencies=[Depends(get_current_user)])
 async def create_club(club: ClubCreate, db: Session = Depends(get_db)):
     try:
         new_club = Clubs(name=club.name)  # id будет сгенерирован автоматически
@@ -186,7 +236,7 @@ async def create_club(club: ClubCreate, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/players", dependencies=[Depends(authenticate_user)])
+@app.post("/players", dependencies=[Depends(get_current_user)])
 async def create_player(player: PlayerCreate, db: Session = Depends(get_db)):
     try:
         new_player = Players(id_club=player.id_club, name=player.name, surname=player.surname)
@@ -198,7 +248,7 @@ async def create_player(player: PlayerCreate, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/goal", dependencies=[Depends(authenticate_user)])
+@app.post("/goal", dependencies=[Depends(get_current_user)])
 async def create_goal(goal: GoalCreate, db: Session = Depends(get_db)):
     try:
         new_goal = Goals(id_players=goal.id_players, goal=goal.goal)
@@ -210,7 +260,7 @@ async def create_goal(goal: GoalCreate, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/clubs/{id}", dependencies=[Depends(authenticate_user)])
+@app.put("/clubs/{id}", dependencies=[Depends(get_current_user)])
 async def update_item(id: int, club_update: ClubCreate, db: Session = Depends(get_db)):
     try:
         club = db.query(Clubs).filter(Clubs.id == id).first()
@@ -227,7 +277,7 @@ async def update_item(id: int, club_update: ClubCreate, db: Session = Depends(ge
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/players/{id}", dependencies=[Depends(authenticate_user)])
+@app.put("/players/{id}", dependencies=[Depends(get_current_user)])
 async def update_player(id: int, player_update: PlayerUpdate, db: Session = Depends(get_db)): #Переменная теперь player_update: PlayerUpdate
     try:
         player = db.query(Players).filter(Players.id == id).first()
@@ -250,7 +300,7 @@ async def update_player(id: int, player_update: PlayerUpdate, db: Session = Depe
         logging.error(e)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/goals/{id}", dependencies=[Depends(authenticate_user)])
+@app.put("/goals/{id}", dependencies=[Depends(get_current_user)])
 async def update_goal(id: int, goal_update: GoalUpdate, db: Session = Depends(get_db)):
     try:
         goal = db.query(Goals).filter(Goals.id == id).first()
@@ -270,7 +320,7 @@ async def update_goal(id: int, goal_update: GoalUpdate, db: Session = Depends(ge
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/clubs/{id}", dependencies=[Depends(authenticate_user)])
+@app.delete("/clubs/{id}", dependencies=[Depends(get_current_user)])
 async def delete_club(id: int, db: Session = Depends(get_db)):
     print("Del")
     try:
@@ -294,7 +344,7 @@ async def delete_club(id: int, db: Session = Depends(get_db)):
         db.rollback()  # Важно откатить транзакцию при ошибке
         raise HTTPException(status_code=500, detail=str(e))  # Вернуть сообщение об ошибке
 
-@app.delete("/players/{id}", dependencies=[Depends(authenticate_user)])
+@app.delete("/players/{id}", dependencies=[Depends(get_current_user)])
 async def delete_player(id: int, db: Session = Depends(get_db)):
     try:
         player = db.query(Players).filter(Players.id == id).first()
@@ -312,7 +362,7 @@ async def delete_player(id: int, db: Session = Depends(get_db)):
         db.rollback()  # Важно откатить транзакцию при ошибке
         raise HTTPException(status_code=500, detail=str(e))  # Вернуть сообщение об ошибке
 
-@app.delete("/goals/{id}", dependencies=[Depends(authenticate_user)])
+@app.delete("/goals/{id}", dependencies=[Depends(get_current_user)])
 async def delete_goal(id: int, db: Session = Depends(get_db)):
     try:
         goal = db.query(Goals).filter(Goals.id == id).first()
@@ -341,6 +391,26 @@ async def create_user(user: UserCreate, db: Session = Depends(get_db)):
         db.rollback()
         logging.exception(f"Error creating user: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@app.post("/token")
+async def login_for_access_token(form_OAuth2PasswordRequestForm: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    try:
+        user = await authenticate_user(form_OAuth2PasswordRequestForm.username, form_OAuth2PasswordRequestForm.password, db)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        access_token_expires = datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.username, "role": user.role},
+            expires_delta=access_token_expires
+        )
+        return {"access_token": access_token, "token_type": "bearer"}
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
+
 
 if __name__ == '__main__':
     import uvicorn
