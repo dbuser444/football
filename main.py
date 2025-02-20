@@ -10,9 +10,8 @@ from pydantic import BaseModel, ValidationError
 from typing import Optional, List
 import datetime
 from jose import JWTError, jwt
-from starlette.responses import RedirectResponse
 import logging
-from fastapi.security import OAuth2PasswordRequestForm # Import OAuth2PasswordRequestForm (Импорт OAuth2PasswordRequestForm)
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi import Header
 
 load_dotenv()
@@ -61,7 +60,7 @@ def verify_password(plain_password, hashed_password): # Функция для п
 def get_password_hash(password): # Функция для хеширования пароля
     return pwd_context.hash(password)
 
-def create_access_token(data:dict, expires_delta: Optional[datetime.timedelta] = None): # Fixed create_access_token (Исправлена create_access_token)
+def create_access_token(data:dict, expires_delta: Optional[datetime.timedelta] = None):
     """Creates a JWT access token."""
     to_encode = data.copy()
     if expires_delta:
@@ -143,9 +142,8 @@ class UserInDB(BaseModel):
 
 async def get_current_user(
     db: Session = Depends(get_db),
-    authorization: str = Header(None)  # Expect Authorization header (Ожидаем заголовок Authorization)
-):
-    """Gets the current user from the JWT token in the Authorization header."""
+    authorization: str = Header(None)):
+
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid credentials",
@@ -156,9 +154,9 @@ async def get_current_user(
         raise credentials_exception
 
     try:
-        token = authorization.split(" ")[1]  # Get the token from "Bearer <token>" (Получить токен из "Bearer <token>")
+        token = authorization.split(" ")[1]  # Получить токен из "Bearer <token>"
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")  # "sub" (subject) typically holds the username (обычно "sub" (subject) содержит имя пользователя)
+        username: str = payload.get("sub")  # обычно "sub" (subject) содержит имя пользователя
         if username is None:
             raise credentials_exception
         user = db.query(User).filter(User.username == username).first()
