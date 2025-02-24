@@ -16,6 +16,9 @@ from fastapi import Header
 
 load_dotenv()
 
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(name)s %(levelname)s:%(message)s')
+logger = logging.getLogger(__name__)
+
 db_host = os.environ.get("DB_HOST")
 db_port = os.environ.get("DB_PORT")
 db_name = os.environ.get("DB_NAME")
@@ -37,7 +40,8 @@ Base = declarative_base()
 # Создаем контекст для хеширования паролей с использованием bcrypt
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-SECRET_KEY = os.environ.get("SECRET_KEY") or "YOUR_SECRET_KEY"  #надежный случайный ключ
+SECRET_KEY = os.environ.get("SECRET_KEY", "your_secret_key") #надежный случайный ключ
+print(f"SECRET_KEY type: {type(SECRET_KEY)}")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 120 #Время жизни токена
 
@@ -45,31 +49,36 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 120 #Время жизни токена
 security = HTTPBearer()
 
 # настройка логирования
-logging.basicConfig(level=logging.INFO)
+#logging.basicConfig(level=logging.INFO)
 
 def get_db():
     db = SessionLocal()
     try:
+        logger.info("Успешная авторизация в базе данных")
         yield db
     finally:
+        logger.warning("Авторизация в базу данных не осуществленна")
         db.close()
 
 def verify_password(plain_password, hashed_password): # Функция для проверки, соответствует ли введенный пароль хешированному
     return pwd_context.verify(plain_password, hashed_password)
+    logger.info("Пароль верный")
 
 def get_password_hash(password): # Функция для хеширования пароля
     return pwd_context.hash(password)
+    logger.info("Пароль захеширован")
 
 def create_access_token(data:dict, expires_delta: Optional[datetime.timedelta] = None):
-    """Creates a JWT access token."""
     to_encode = data.copy()
-    if expires_delta:
+    if expires_delta: # если переданно значение времени
         expire = datetime.datetime.utcnow() + expires_delta
-    else:
+    else: # использование по умолчанию
         expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire}) #добавление время истечения срока действия с словарь с данными
+    #копируем словать в JWT токен с использованием секретного ключа и алгоритма
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    logger.info("Пользователю передан токен")
+    return encoded_jwt # возвращаем закодированный токен
 
 class User(Base):
     __tablename__ = "users"
@@ -80,7 +89,6 @@ class User(Base):
 
 class Clubs(Base):
     __tablename__ = "football_club"
-
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     name = Column(String, index=True)
 
@@ -102,12 +110,16 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
+# для авторизации пользователя
 async def authenticate_user(username: str, password: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == username).first()
-    if not user:
+    user = db.query(User).filter(User.username == username).first() # ищем пользователя в базе данных по имени пользователя
+    if not user: #если пользовалель не найден
+        logger.error("Пользователь не найден")
         return False
     if not verify_password(password, user.hashed_password):
+        logger.error("Пользователь ввел неверный пароль")
         return False
+    logger.info("Авторизация успешная")
     return user
 
 
@@ -140,6 +152,7 @@ class UserInDB(BaseModel):
     hashed_password: str
     role: str
 
+# для получения текущего пользователя из JWT-токена
 async def get_current_user(
     db: Session = Depends(get_db),
     authorization: str = Header(None)):
@@ -147,80 +160,102 @@ async def get_current_user(
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+        headers={"WWW-Authenticate": "Bearer"})
 
     if not authorization:
+        logger.warning("загололовок авторизации не указан.")
         raise credentials_exception
-
     try:
         token = authorization.split(" ")[1]  # Получить токен из "Bearer <token>"
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")  # обычно "sub" (subject) содержит имя пользователя
-        if username is None:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM]) # декодируем токен
+        username: str = payload.get("sub")  # обычно "sub" содержит имя пользователя
+
+        if username is None: # проверяем присутсствует ли пользователь в полезной нагрузке
+            logging.warning("Пользователь отсутствует в полезной нагрузке.")
             raise credentials_exception
         user = db.query(User).filter(User.username == username).first()
         if user is None:
+            logging.warning(f"User not found in database: {username}")
             raise credentials_exception
         return user
-    except JWTError:
+    except JWTError as e:
+        logger.exception(f"JWTError: {e}")
         raise credentials_exception
 
 def is_admin(current_user: User = Depends(get_current_user)):
+    logger.info("is_admin called!")
     if current_user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Insufficient permissions",
+            detail="Insufficient permissions: Admin role required",
         )
+    logger.info("Этот пользователь не админ")
     return current_user
 
 
 @app.get("/clubs", dependencies=[Depends(get_current_user)])
 async def read_items(db: Session = Depends(get_db)):
-    items = db.query(Clubs).all()
+    logger.info("Запрос на получение списка клубов.")
+    try:
+        items = db.query(Clubs).all()
 
-    # Преобразуем результаты в список словарей для JSON
-    result = []
-    for item in items:
-        result.append({
-            "ID": item.id,
-            "Name": item.name
-        })
-
-    return result
+        # Преобразуем результаты в список словарей для JSON
+        result = []
+        for item in items:
+            result.append({
+                "ID": item.id,
+                "Name": item.name
+            })
+        logger.debug("Результаты успешно преобразованы в список словарей.")
+        logger.info("Успешная отправка списка клубов.")
+        return result
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/players", dependencies=[Depends(get_current_user)])
 async def read_items(db: Session = Depends(get_db)):
-    items = db.query(Players).all()
+    try:
+        logger.info("Запрос на получение списка игроков.")
+        items = db.query(Players).all()
+        # Преобразуем результаты в список словарей для JSON
+        result = []
+        for item in items:
+            result.append({
+                "ID": item.id,
+                "ID club": item.id_club,
+                "Name": item.name,
+                "Surname": item.surname
+            })
 
-    # Преобразуем результаты в список словарей для JSON
-    result = []
-    for item in items:
-        result.append({
-            "ID": item.id,
-            "ID club": item.id_club,
-            "Name": item.name,
-            "Surname": item.surname
-        })
-
-    return result
-
+        logger.debug("Результаты успешно преобразованы в список словарей.")
+        logger.info("Успешная отправка списка игроков.")
+        return result
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/goal", dependencies=[Depends(get_current_user)])
 async def read_items(db: Session = Depends(get_db)):
-    #logger.info("goal")
-    items = db.query(Goals).all()
+    try:
+        logger.info("Запрос на получение списка голов.")
+        items = db.query(Goals).all()
 
-    # Преобразуем результаты в список словарей для JSON
-    result = []
-    for item in items:
-        result.append({
-            "ID": item.id,
-            "ID player": item.id_players,
-            "Goal": item.goal
-        })
+        # Преобразуем результаты в список словарей для JSON
+        result = []
+        for item in items:
+            result.append({
+                "ID": item.id,
+                "ID player": item.id_players,
+                "Goal": item.goal
+            })
 
-    return result
+        logger.debug("Результаты успешно преобразованы в список словарей.")
+        logger.info("Успешная отправка списка голов.")
+        return result
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/clubs", dependencies=[Depends(get_current_user)])
 async def create_club(club: ClubCreate, db: Session = Depends(get_db)):
@@ -294,6 +329,7 @@ async def update_player(id: int, player_update: PlayerUpdate, db: Session = Depe
         db.refresh(player)
         return player
     except Exception as e:
+        logger.exception(f"Произошла ошибка при получении списка клубов: {e}")
         db.rollback()
         logging.error(e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -376,19 +412,23 @@ async def delete_goal(id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 # Эндпоинт для создания пользователя (только для администраторов!)
-@app.post("/create_user")
-async def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    try:
-        hashed_password = get_password_hash(user.password)
-        db_user = User(username=user.username, hashed_password=hashed_password, role=user.role)  # Set the role
-        db.add(db_user)
-        db.commit()
-        db.refresh(db_user)
-        return {"username": db_user.username, "role": db_user.role}  # Return the role
-    except Exception as e:
-        db.rollback()
-        logging.exception(f"Error creating user: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+@app.post("/create_user", dependencies=[Depends(is_admin)])
+async def create_user(
+        user: UserCreate,
+        db: Session = Depends(get_db),
+        #current_user: User = Depends(get_current_user)
+        ):
+
+    existing_user = db.query(User).filter(User.username == user.username).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Username already exists")
+
+    hashed_password = get_password_hash(user.password)
+    db_user = User(username=user.username, hashed_password=hashed_password, role=user.role)
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return {"username": db_user.username, "role": db_user.role}
 
 @app.post("/token")
 async def login_for_access_token(form_OAuth2PasswordRequestForm: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
