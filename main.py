@@ -41,7 +41,6 @@ Base = declarative_base()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 SECRET_KEY = os.environ.get("SECRET_KEY", "your_secret_key") #надежный случайный ключ
-print(f"SECRET_KEY type: {type(SECRET_KEY)}")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 120 #Время жизни токена
 
@@ -57,7 +56,6 @@ def get_db():
         logger.info("Успешная авторизация в базе данных")
         yield db
     finally:
-        logger.warning("Авторизация в базу данных не осуществленна")
         db.close()
 
 def verify_password(plain_password, hashed_password): # Функция для проверки, соответствует ли введенный пароль хешированному
@@ -171,11 +169,11 @@ async def get_current_user(
         username: str = payload.get("sub")  # обычно "sub" содержит имя пользователя
 
         if username is None: # проверяем присутсствует ли пользователь в полезной нагрузке
-            logging.warning("Пользователь отсутствует в полезной нагрузке.")
+            logger.warning("Пользователь отсутствует в полезной нагрузке.")
             raise credentials_exception
         user = db.query(User).filter(User.username == username).first()
         if user is None:
-            logging.warning(f"User not found in database: {username}")
+            logger.warning(f"Пользователь не найден в базе данных: {username}")
             raise credentials_exception
         return user
     except JWTError as e:
@@ -183,13 +181,13 @@ async def get_current_user(
         raise credentials_exception
 
 def is_admin(current_user: User = Depends(get_current_user)):
-    logger.info("is_admin called!")
     if current_user.role != "admin":
+        logger.info("у этого пользователя нет прав админа")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions: Admin role required",
         )
-    logger.info("Этот пользователь не админ")
+    logger.info("вызваны права администратора!")
     return current_user
 
 
@@ -250,7 +248,7 @@ async def read_items(db: Session = Depends(get_db)):
                 "Goal": item.goal
             })
 
-        logger.debug("Результаты успешно преобразованы в список словарей.")
+        logger.info("Результаты успешно преобразованы в список словарей.")
         logger.info("Успешная отправка списка голов.")
         return result
     except Exception as e:
@@ -259,59 +257,72 @@ async def read_items(db: Session = Depends(get_db)):
 
 @app.post("/clubs", dependencies=[Depends(get_current_user)])
 async def create_club(club: ClubCreate, db: Session = Depends(get_db)):
+    logger.info(f"Запрос на создание нового клуба с именем: {club.name}")
     try:
         new_club = Clubs(name=club.name)  # id будет сгенерирован автоматически
         db.add(new_club)
+        logger.info("Новый клуб добавлен в сессию базы данных")
         db.commit()
         db.refresh(new_club)
         return new_club
     except Exception as e:
         db.rollback()
+        logger.exception(f"Ошибка при создании клуба с именем {club.name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/players", dependencies=[Depends(get_current_user)])
 async def create_player(player: PlayerCreate, db: Session = Depends(get_db)):
+    logger.info(f"Запрос на создание нового игрока с именем: {player.name}")
     try:
         new_player = Players(id_club=player.id_club, name=player.name, surname=player.surname)
         db.add(new_player)
+        logger.info("Новый игрок добавлен в сессию базы данных")
         db.commit()
         db.refresh(new_player)
         return new_player
     except Exception as e:
         db.rollback()
+        logger.exception(f"Ошибка при создании игрока с именем {player.name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/goal", dependencies=[Depends(get_current_user)])
 async def create_goal(goal: GoalCreate, db: Session = Depends(get_db)):
+    logger.info(f"Запрос на создание нового игрока с именем: {goal.name}")
     try:
         new_goal = Goals(id_players=goal.id_players, goal=goal.goal)
         db.add(new_goal)
+        logger.info("Голы игрока добавлены в сессию базы данных")
         db.commit()
         db.refresh(new_goal)
         return new_goal
     except Exception as e:
         db.rollback()
+        logger.exception(f"Ошибка при создании голов игрока № {goal.id_players}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/clubs/{id}", dependencies=[Depends(get_current_user)])
 async def update_item(id: int, club_update: ClubCreate, db: Session = Depends(get_db)):
+    logger.info(f"Запрос на обновление клуба с ID: {id}.")
     try:
         club = db.query(Clubs).filter(Clubs.id == id).first()
         if club is None:
+            logger.warning(f"Клуб с ID {id} не найден.")
             raise HTTPException(status_code=404, detail="Club not found")
 
         # Обновляем все поля клуба данными из club_update
         club.name = club_update.name
-
+        logger.info("Имя клуба обновлено")
         db.commit()
         db.refresh(club) # Обновляем объект club из базы данных, чтобы получить последние изменения
         return club
     except Exception as e:
         db.rollback()
+        logger.exception(f"Ошибка при обновлении клуба с ID {id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/players/{id}", dependencies=[Depends(get_current_user)])
 async def update_player(id: int, player_update: PlayerUpdate, db: Session = Depends(get_db)): #Переменная теперь player_update: PlayerUpdate
+    logger.info(f"Запрос на обновление игрока с ID: {id}.")
     try:
         player = db.query(Players).filter(Players.id == id).first()
         if player is None:
@@ -324,18 +335,18 @@ async def update_player(id: int, player_update: PlayerUpdate, db: Session = Depe
             player.name = player_update.name
         if player_update.surname is not None:
             player.surname = player_update.surname
-
+        logger.info("Данные обновленны")
         db.commit()
         db.refresh(player)
         return player
     except Exception as e:
-        logger.exception(f"Произошла ошибка при получении списка клубов: {e}")
+        logger.exception(f"Ошибка при обновлении игрока с ID {id}: {e}")
         db.rollback()
-        logging.error(e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/goals/{id}", dependencies=[Depends(get_current_user)])
 async def update_goal(id: int, goal_update: GoalUpdate, db: Session = Depends(get_db)):
+    logger.info(f"Запрос на обновление голов по ID: {id}.")
     try:
         goal = db.query(Goals).filter(Goals.id == id).first()
         if goal is None:
@@ -347,68 +358,83 @@ async def update_goal(id: int, goal_update: GoalUpdate, db: Session = Depends(ge
         if goal_update.goal is not None:
             goal.goal = goal_update.goal
 
+        logger.info("Данные обновленны")
         db.commit()
         db.refresh(goal)  # Обновляем объект goal после коммита
         return goal
     except Exception as e:
         db.rollback()
+        logger.exception(f"Ошибка при обновлении голов по ID {id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/clubs/{id}", dependencies=[Depends(get_current_user)])
 async def delete_club(id: int, db: Session = Depends(get_db)):
-    print("Del")
+    logger.info(f"Запрос на удаление клуба с ID: {id}")
     try:
         club = db.query(Clubs).filter(Clubs.id == id).first()
         if club is None:
+            logger.warning(f"Клуб с ID {id} не найден.")
             raise HTTPException(status_code=404, detail="Club not found")
 
         # 1. Удаляем Goals, связанные с Players, которые связаны с клубом
         player_ids = [player.id for player in db.query(Players).filter(Players.id_club == id).all()]
         for player_id in player_ids:
-            db.query(Goals).filter(Goals.id_players == player_id).delete(synchronize_session=False)
+            num_goals_deleted = db.query(Goals).filter(Goals.id_players == player_id).delete(synchronize_session=False)
+            logger.debug(f"Удалено {num_goals_deleted} голов для игрока ID {player_id}.")
 
         # 2. Удаляем Players, связанные с клубом
-        db.query(Players).filter(Players.id_club == id).delete(synchronize_session=False)
+        num_players_deleted = db.query(Players).filter(Players.id_club == id).delete(synchronize_session=False)
+        logger.debug(f"Удалено {num_players_deleted} игроков, связанных с клубом ID {id}.")
 
         # удаляем клуб
         db.delete(club)
+        logger.debug(f"Клуб ID {id} удален.")
         db.commit()
         return {"message": f"Club with id {id} deleted successfully"}
     except Exception as e:
         db.rollback()  # Важно откатить транзакцию при ошибке
+        logger.exception(f"Ошибка при удалении клуба с ID {id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))  # Вернуть сообщение об ошибке
 
 @app.delete("/players/{id}", dependencies=[Depends(get_current_user)])
 async def delete_player(id: int, db: Session = Depends(get_db)):
+    logger.info(f"Запрос на удаление игрока с ID: {id}")
     try:
         player = db.query(Players).filter(Players.id == id).first()
         if player is None:
+            logger.warning(f"Игрок с ID {id} не найден.")
             raise HTTPException(status_code=404, detail="Player not found")
 
         # 1. Удаляем Goals, связанные с Players, которые связаны с клубом
-        db.query(Goals).filter(Goals.id_players == id).delete(synchronize_session=False)
+        num_goals_deleted = db.query(Goals).filter(Goals.id_players == id).delete(synchronize_session=False)
+        logger.debug(f"Удалено {num_goals_deleted} голов, связанных с игроком ID {id}.")
 
         # удаляем игрока
         db.delete(player)
+        logger.info(f"Игрок ID {id} удален.")
         db.commit()
         return {"message": f"Player with id {id} deleted successfully"}
     except Exception as e:
         db.rollback()  # Важно откатить транзакцию при ошибке
+        logger.exception(f"Ошибка при удалении игрока с ID {id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))  # Вернуть сообщение об ошибке
 
 @app.delete("/goals/{id}", dependencies=[Depends(get_current_user)])
 async def delete_goal(id: int, db: Session = Depends(get_db)):
+    logger.info(f"Запрос на удаление гола с ID: {id}")
     try:
         goal = db.query(Goals).filter(Goals.id == id).first()
         if goal is None:
+            logger.warning(f"Гол с ID {id} не найден.")
             raise HTTPException(status_code=404, detail="Goal not found")
 
         db.delete(goal)
+        logger.info(f"Гол ID {id} удален.")
         db.commit()
         return {"message": f"Goal with id {id} deleted successfully"}
     except Exception as e:
         db.rollback()
-        logging.error(e)
+        logger.exception(f"Ошибка при удалении гола с ID {id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Эндпоинт для создания пользователя (только для администраторов!)
@@ -418,23 +444,35 @@ async def create_user(
         db: Session = Depends(get_db),
         #current_user: User = Depends(get_current_user)
         ):
+    logger.info(f"Запрос на создание нового пользователя с именем: {user.username} и ролью: {user.role}")
+    try:
+        existing_user = db.query(User).filter(User.username == user.username).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Username already exists")
 
-    existing_user = db.query(User).filter(User.username == user.username).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Username already exists")
+        hashed_password = get_password_hash(user.password)
+        logger.debug("Пароль пользователя успешно хеширован.")
 
-    hashed_password = get_password_hash(user.password)
-    db_user = User(username=user.username, hashed_password=hashed_password, role=user.role)
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    return {"username": db_user.username, "role": db_user.role}
+        db_user = User(username=user.username, hashed_password=hashed_password, role=user.role)
+        db.add(db_user)
+        logger.debug("Новый пользователь добавлен в сессию базы данных.")
+        db.commit()
+        logger.debug("Изменения зафиксированы в базе данных.")
+        db.refresh(db_user)
+        logger.info(f"Пользователь {user.username} с ролью {user.role} успешно создан. ID: {db_user.id}")
+        return {"username": db_user.username, "role": db_user.role}
+    except Exception as e:
+        db.rollback()  # Важно откатить транзакцию при ошибке
+        logger.exception(f"Ошибка при создании пользователя {user.username}: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка при создании пользователя.")  # Возвращаем сообщение об ошибке
 
 @app.post("/token")
 async def login_for_access_token(form_OAuth2PasswordRequestForm: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    logger.info(f"Запрос на создание токена")
     try:
         user = await authenticate_user(form_OAuth2PasswordRequestForm.username, form_OAuth2PasswordRequestForm.password, db)
         if not user:
+            logger.warning(f"Неудачная попытка входа для пользователя")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect username or password",
@@ -445,8 +483,10 @@ async def login_for_access_token(form_OAuth2PasswordRequestForm: OAuth2PasswordR
             data={"sub": user.username, "role": user.role},
             expires_delta=access_token_expires
         )
+        logger.info("Токен доступа успешно создан.")
         return {"access_token": access_token, "token_type": "bearer"}
     except ValidationError as e:
+        logger.warning(f"Ошибка валидации данных при запросе токена: {e.errors()}")
         raise HTTPException(status_code=422, detail=e.errors())
 
 
