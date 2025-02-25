@@ -27,7 +27,6 @@ db_password = os.environ.get("DB_PASSWORD")
 
 # URL для подключения к PostgreSQL
 DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-
 # Создаём движок SQLAlchemy
 engine = create_engine(DATABASE_URL)
 
