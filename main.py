@@ -12,7 +12,7 @@ import datetime
 from jose import JWTError, jwt
 import logging
 from fastapi.security import OAuth2PasswordRequestForm
-from fastapi import Header
+from fastapi import Header, WebSocket, WebSocketDisconnect
 
 load_dotenv()
 
@@ -189,6 +189,44 @@ def is_admin(current_user: User = Depends(get_current_user)):
     logger.info("вызваны права администратора!")
     return current_user
 
+active_connections: List[WebSocket] = []
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, authorization: str = Header(None), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    if not authorization:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    try:
+        token = authorization.split(" ")[1]  # Получить токен из "Bearer <token>
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")  # обычно "sub" (subject) содержит имя пользователя
+        if username is None:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        user = db.query(User).filter(User.username == username).first()
+        if user is None:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        await websocket.accept()
+        try:
+            while True:
+                data = await websocket.receive_text()
+                await websocket.send_text(f"Аутентифицированный клиент с именем {payload['sub']} сказал: {data}") # Отправляем сообщение обратно
+
+        except WebSocketDisconnect:
+            logging.info(f"Client disconnected")
+
+    except JWTError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
 
 @app.get("/clubs", dependencies=[Depends(get_current_user)])
 async def read_items(db: Session = Depends(get_db)):
